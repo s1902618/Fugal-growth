@@ -1,0 +1,194 @@
+```{r}
+
+library(tidyverse)
+library(dplyr)
+
+# read the data
+foldchange <- read.csv("~/foldchange.csv",na.strings=c("NA","NaN"))
+SampleSheet <-read.csv("~/SampleSheet.csv")
+
+foldchange<- foldchange[complete.cases(foldchange), ]
+foldchange$FoldChange <- log(foldchange$FoldChange)
+
+foldchange <- foldchange %>% 
+  filter_at(vars(FoldChange), all_vars(!is.infinite(.))) 
+  #filter(str_detect(Gene, "CNAG_0"))%>%
+
+foldchange <- foldchange %>% 
+  select(-X)
+  
+SampleSheet<- SampleSheet %>%
+  select(-X)
+
+
+d <- density(foldchange$FoldChange) # returns the density data
+plot(d) # plots the results
+
+qqnorm(foldchange$FoldChange)
+
+#a = foldchange %>% group_by(Code) %>% summarize(count=n())
+#new_data <- foldchange[is.na(foldchange$FoldChange),]
+
+```
+
+
+```{r}
+
+trans_cts_mean <- foldchange %>% 
+  # join with sample info table
+  full_join(SampleSheet, by = ("Code")) %>% 
+  # for each gene
+  group_by(Gene) %>% 
+  # scale the cts column
+  mutate(FoldChange_scaled = (FoldChange - mean(FoldChange))/sd(FoldChange)) %>% 
+  # for each gene, strain and minute
+  group_by(Gene,Medium,Temp,Time,Rep) %>%
+  # calculate the mean (scaled) cts
+  summarise(mean_FoldChange_scaled = mean(FoldChange_scaled),
+            nrep = n()) %>% 
+  ungroup()
+```
+
+
+```{r}
+
+# set of candidate genes for clustering
+candidate_genes <- foldchange %>% 
+  filter(str_detect(Gene, "CNAG_0"))%>%   # filter table
+  pull(Gene) %>%             # extract the gene column as a vector
+  unique()                   # retain only unique values
+
+
+# Create a matrix
+hclust_matrix <- foldchange %>% 
+  select(-Gene) %>% 
+  select(-EstCounts) %>% 
+  select(-TPM) %>%
+  group_by(Code) %>%
+  mutate(row = row_number()) %>%
+  tidyr::pivot_wider(names_from = Code, values_from = FoldChange) %>%
+  select(-row)%>%
+  as.matrix()
+
+length(rownames(hclust_matrix ))
+# assign rownames
+rownames(hclust_matrix) <- foldchange$Gene
+```
+
+
+```{r}
+hclust_matrix <- hclust_matrix[candidate_genes, ]
+
+hclust_matrix <- hclust_matrix %>% 
+  # transpose the matrix so genes are as columns
+  t() %>% 
+  # apply scalling to each column of the matrix (genes)
+  scale() %>% 
+  # transpose back so genes are as rows again
+  t()
+```
+
+
+```{r}
+gene_dist <- dist(hclust_matrix)
+```
+
+
+```{r}
+gene_hclust <- hclust(gene_dist, method = "complete")
+
+# The default `plot()` function can be used to produce a simple dendrogram
+plot(gene_hclust, labels = FALSE)
+abline(h = 10, col = "brown", lwd = 2) # add horizontal line to illustrate cutting dendrogram
+```
+
+
+```{r}
+cutree(gene_hclust, k = 5)
+
+gene_cluster <- cutree(gene_hclust, k = 5) %>% 
+  # turn the named vector into a tibble
+  enframe() %>% 
+  # rename some of the columns
+  rename(Gene = name, cluster = value)
+
+head(gene_cluster)
+
+library(devtools)
+#install_github("jokergoo/ComplexHeatmap")
+library(ComplexHeatmap)
+Heatmap(hclust_matrix, show_row_names = FALSE)
+
+
+```
+
+
+```{r}
+trans_cts_cluster %>% 
+  ggplot(aes(minute, mean_cts_scaled)) +
+  geom_line(aes(group = gene)) +
+  facet_grid( cols = vars(cluster))
+
+
+trans_cts_cluster %>% 
+  ggplot(aes(minute, mean_cts_scaled)) +
+  geom_line(aes(group = Gene), alpha = 0.3) +
+  geom_line(stat = "summary", fun.y = "median", colour = "brown", size = 1.5, 
+            aes(group = 1)) +
+  facet_grid(cols = vars(cluster))
+```
+
+
+```{r}
+
+# Create a matrix from our table of counts
+pca_matrix <- foldchange%>% 
+  select(-Gene) %>% 
+  select(-EstCounts) %>% 
+  select(-TPM) %>%
+  group_by(Code) %>%
+  mutate(row = row_number()) %>%
+  tidyr::pivot_wider(names_from = Code, values_from = FoldChange) %>%
+  select(-row)%>%
+  as.matrix()
+pca_matrix<- pca_matrix[complete.cases(pca_matrix), ]
+
+# Assign row names to the matrix
+rownames(pca_matrix) <- foldchange$Gene
+
+# Transpose the matrix so that rows = samples and columns = variables
+pca_matrix <- t(pca_matrix)
+
+# Perform the PCA
+sample_pca <- prcomp(pca_matrix)
+```
+
+
+```{r}
+
+# Convert matrix to tibble
+as_tibble(pca_matrix)
+
+# Convert matrix to tibble - add colnames to a new column called "gene"
+as_tibble(pca_matrix, rownames = "sample")
+
+library(broom)
+
+# PC variances (eigen values)
+tidy(sample_pca, matrix = "pcs")
+
+
+tidy(sample_pca, matrix = "pcs") %>% 
+  ggplot(aes(x = factor(PC))) +
+  geom_col(aes(y = percent)) +
+  geom_line(aes(y = cumulative, group = 1)) + 
+  geom_point(aes(y = cumulative)) +
+  labs(x = "Principal component", y = "Fraction variance explained")
+```
+
+
+```{r}
+
+
+```
+
